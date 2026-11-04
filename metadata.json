@@ -1,0 +1,7 @@
+{
+  "uuid": "open-code-usage@local",
+  "name": "OpenCode Go",
+  "description": "OpenCode Go usage meters and per-model usage in the top bar. Click for limits, hover the models icon for details.",
+  "shell-version": ["46"],
+  "version": 1
+}

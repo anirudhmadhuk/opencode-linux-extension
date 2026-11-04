@@ -1,0 +1,161 @@
+#!/usr/bin/env python3
+"""Live OpenCode Go usage meters (rolling 5h / weekly / monthly).
+
+Source A (default): GET https://opencode.ai/zen/go/v1/usage  -> integer percent
+Source B (--access FILE): the richer console payload with meters.{fiveHour,week,month}
+                          and usedMicroCents / limitMicroCents -> exact percent
+
+Key: $OC_API_KEY, else ~/.config/opencode/zen-key
+
+Usage: oc-meters [--json] [--no-cache] [--access FILE]
+Exit:  0 ok, 1 no key, 2 request failed, 3 any window at 100%
+"""
+import json
+import os
+import sys
+import time
+import urllib.error
+import urllib.request
+from datetime import datetime, timezone
+
+URL = "https://opencode.ai/zen/go/v1/usage"
+CACHE = os.path.expanduser("~/.cache/oc-meters.json")
+KEYFILE = os.path.expanduser("~/.config/opencode/zen-key")
+TTL = 15
+
+WINDOWS = (("rolling", "Rolling 5h"), ("weekly", "Weekly"), ("monthly", "Monthly"))
+
+
+def api_key():
+    key = os.environ.get("OC_API_KEY", "").strip()
+    if key:
+        return key
+    try:
+        with open(KEYFILE) as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    return line
+    except OSError:
+        pass
+    try:
+        out = os.popen("opencode api get /api/credential 2>/dev/null").read()
+        for cred in json.loads(out)["data"]:
+            val = cred.get("value") or {}
+            if cred.get("integrationID", "").startswith("opencode") and val.get("type") == "key":
+                return val["key"]
+    except Exception:
+        pass
+    return None
+
+
+def fetch(key):
+    req = urllib.request.Request(
+        URL,
+        headers={"Authorization": f"Bearer {key}", "User-Agent": "oc-meters/1"},
+    )
+    with urllib.request.urlopen(req, timeout=10) as r:
+        return json.load(r)["usage"]
+
+
+def cached(key, use_cache):
+    if use_cache:
+        try:
+            if time.time() - os.stat(CACHE).st_mtime < TTL:
+                with open(CACHE) as f:
+                    return json.load(f)
+        except (OSError, ValueError):
+            pass
+    usage = fetch(key)
+    try:
+        os.makedirs(os.path.dirname(CACHE), exist_ok=True)
+        with open(CACHE, "w") as f:
+            json.dump(usage, f)
+    except OSError:
+        pass
+    return usage
+
+
+def from_access(path):
+    with open(path) as f:
+        doc = json.load(f)
+    acc = doc.get("access", doc)
+    meters = acc["meters"]
+    return {
+        "rolling": dict(meters["fiveHour"]),
+        "weekly": dict(meters["week"]),
+        "monthly": dict(meters["month"]),
+    }
+
+
+def percent(v):
+    used, limit = v.get("usedMicroCents"), v.get("limitMicroCents")
+    if used is not None and limit:
+        return round(100.0 * int(used) / int(limit), 1)
+    p = v.get("percent")
+    return None if p is None else float(p)
+
+
+def resets_in(iso):
+    if not iso:
+        return "?"
+    try:
+        when = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+    except ValueError:
+        return "?"
+    secs = int((when - datetime.now(timezone.utc)).total_seconds())
+    if secs <= 0:
+        return "now"
+    days, rem = divmod(secs, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes = rem // 60
+    if days:
+        return f"{days}d {hours}h"
+    if hours:
+        return f"{hours}h {minutes:02d}m"
+    return f"{minutes}m"
+
+
+def main():
+    argv = sys.argv[1:]
+    source = None
+    for i, a in enumerate(argv):
+        if a == "--access" and i + 1 < len(argv):
+            source = argv[i + 1]
+
+    if source:
+        try:
+            usage = from_access(source)
+        except (OSError, KeyError, ValueError) as e:
+            print(f"cannot read access payload: {e}", file=sys.stderr)
+            return 2
+    else:
+        key = api_key()
+        if not key:
+            print("no API key (set OC_API_KEY or write ~/.config/opencode/zen-key)", file=sys.stderr)
+            return 1
+        try:
+            usage = cached(key, "--no-cache" not in argv)
+        except urllib.error.HTTPError as e:
+            print(f"HTTP {e.code} from {URL}", file=sys.stderr)
+            return 2
+        except Exception as e:
+            print(f"{type(e).__name__}: {e}", file=sys.stderr)
+            return 2
+
+    if "--json" in argv:
+        print(json.dumps(usage))
+        return 0
+
+    worst = 0.0
+    for key_, label in WINDOWS:
+        v = usage.get(key_) or {}
+        p = percent(v)
+        worst = max(worst, p or 0)
+        used = "  ?  " if p is None else f"{p:5.1f}%"
+        print(f"{label:<12} used {used}   resets in {resets_in(v.get('resetsAt'))}")
+    return 0 if worst < 100 else 3
+
+
+if __name__ == "__main__":
+    sys.exit(main())
