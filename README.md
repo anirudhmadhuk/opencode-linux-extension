@@ -84,7 +84,7 @@ Get the key: [OpenCode Console → Go](https://opencode.ai/console/go).
 ### Quick install (recommended)
 
 ```bash
-cd OpenCode-Usage-Extension
+cd opencode-linux-extension
 ./install.sh
 ```
 
