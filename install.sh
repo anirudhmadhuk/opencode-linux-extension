@@ -53,16 +53,29 @@ def gsettings(*args):
     ).stdout.strip()
 
 
-try:
-    raw = gsettings("get", "org.gnome.shell", "enabled-extensions")
+def get_list(key):
+    raw = gsettings("get", "org.gnome.shell", key)
     raw = raw[4:] if raw.startswith("@as ") else raw
-    enabled = ast.literal_eval(raw) if raw else []
-    if not isinstance(enabled, list):
-        enabled = []
+    value = ast.literal_eval(raw) if raw else []
+    return value if isinstance(value, list) else []
+
+
+def set_list(key, values):
+    gsettings("set", "org.gnome.shell", key,
+              "[" + ", ".join(repr(entry) for entry in values) + "]")
+
+
+try:
+    enabled = get_list("enabled-extensions")
     if uuid not in enabled:
-        enabled.append(uuid)
-        value = "[" + ", ".join("'%s'" % entry for entry in enabled) + "]"
-        gsettings("set", "org.gnome.shell", "enabled-extensions", value)
+        set_list("enabled-extensions", enabled + [uuid])
+
+    # `disabled-extensions` overrides `enabled-extensions`, so a uuid that was
+    # disabled before (e.g. by `gnome-extensions disable`) must be removed
+    # from it or the extension will never enable itself again.
+    disabled = get_list("disabled-extensions")
+    if uuid in disabled:
+        set_list("disabled-extensions", [entry for entry in disabled if entry != uuid])
 except Exception as error:
     print(f"warning: {error}", file=sys.stderr)
     sys.exit(1)
@@ -73,11 +86,13 @@ gnome-extensions enable "$UUID" >/dev/null 2>&1 || true
 
 cat <<MSG
 
-Installed.
+Installed and enabled.
 
-Restart GNOME Shell to load it:
+Restart GNOME Shell once so it is loaded:
   X11:     press Alt+F2, type r, press Enter
   Wayland: log out and back in
+
+It is already marked enabled, so no extra command is needed.
 
 Verify after the restart:
   gnome-extensions info $UUID
