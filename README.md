@@ -181,8 +181,9 @@ oc-models --window 7d --top 5
 ## Files
 
 ```
-OpenCode-Usage-Extension/
+opencode-linux-extension/
 ├── install.sh          # one-command installer
+├── uninstall.sh        # one-command uninstaller
 ├── README.md           # this file
 ├── LICENSE             # MIT
 ├── metadata.json       # GNOME manifest (uuid open-code-usage@local)
@@ -198,12 +199,25 @@ OpenCode-Usage-Extension/
 ## Uninstall
 
 ```bash
-rm -rf ~/.local/share/gnome-shell/extensions/open-code-usage@local
-rm -f  ~/.local/bin/oc-meters ~/.local/bin/oc-models
-rm -f  ~/.config/opencode/zen-key   # remove your stored key
+./uninstall.sh            # remove the extension, keep your stored key
+./uninstall.sh --purge    # also delete ~/.config/opencode/zen-key
 ```
 
-Restart the shell (`Alt+F2` → `r`).
+The script unloads the extension, removes it from
+`enabled-extensions` / `disabled-extensions`, deletes the extension directory
+and the helper scripts (`oc-meters`, `oc-models`), and keeps your API key unless
+`--purge` is given. It is safe to run more than once.
+
+Manual equivalent:
+
+```bash
+gnome-extensions disable open-code-usage@local
+rm -rf ~/.local/share/gnome-shell/extensions/open-code-usage@local
+rm -f  ~/.local/bin/oc-meters ~/.local/bin/oc-models
+rm -f  ~/.config/opencode/zen-key   # only if you want the key gone
+```
+
+Restart the shell (`Alt+F2` → `r`) if the icon is still visible.
 
 ---
 
