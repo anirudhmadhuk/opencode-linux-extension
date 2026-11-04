@@ -1,0 +1,177 @@
+#!/usr/bin/env python3
+"""Top models by usage for OpenCode Go.
+
+Default source: Console API (account-wide, needs only the API key)
+  GET https://console.opencode.ai/api/usage/models
+  params: range=24h|7d|30d|6m|all, or since=<ISO>, page, pageSize, costOrder
+
+Fallback: --local rebuilds the same shape from ~/.local/share/opencode/opencode.db
+(this machine's OpenCode sessions only).
+
+Usage: oc-models [--window 5h|24h|7d|30d|6m|all] [--top N]
+                 [--by cost|requests] [--json] [--local]
+"""
+import calendar
+import json
+import os
+import sqlite3
+import sys
+import time
+import urllib.error
+import urllib.request
+from datetime import datetime, timedelta, timezone
+
+URL = "https://console.opencode.ai/api/usage/models"
+KEYFILE = os.path.expanduser("~/.config/opencode/zen-key")
+DB = os.path.expanduser("~/.local/share/opencode/opencode.db")
+RANGES = {"24h", "7d", "30d", "6m", "all"}
+
+
+def api_key():
+    key = os.environ.get("OC_API_KEY", "").strip()
+    if key:
+        return key
+    try:
+        with open(KEYFILE) as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    return line
+    except OSError:
+        pass
+    return None
+
+
+def fetch_api(window, page_size, by):
+    key = api_key()
+    if not key:
+        sys.exit("no API key (set OC_API_KEY or write ~/.config/opencode/zen-key)")
+    params = [f"pageSize={page_size}", f"costOrder={'desc' if by == 'cost' else 'asc'}"]
+    if window == "5h":
+        since = datetime.now(timezone.utc) - timedelta(hours=5)
+        params.append(f"since={since.strftime('%Y-%m-%dT%H:%M:%S.000Z')}")
+    elif window in RANGES:
+        params.append(f"range={window}")
+    else:
+        sys.exit(f"unknown window {window!r} (use 5h or one of {sorted(RANGES)})")
+    req = urllib.request.Request(
+        f"{URL}?{'&'.join(params)}",
+        headers={"Authorization": f"Bearer {key}", "User-Agent": "oc-models/1"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return json.load(r)
+    except urllib.error.HTTPError as e:
+        sys.exit(f"HTTP {e.code} from {URL}")
+    except Exception as e:
+        sys.exit(f"{type(e).__name__}: {e}")
+
+
+def window_start(name, now_ms):
+    t = time.gmtime(now_ms / 1000)
+    if name == "5h":
+        return now_ms - 5 * 3600 * 1000
+    if name == "week":
+        midnight = calendar.timegm((t.tm_year, t.tm_mon, t.tm_mday, 0, 0, 0, 0, 0, 0))
+        return (midnight - t.tm_wday * 86400) * 1000
+    if name == "month":
+        return calendar.timegm((t.tm_year, t.tm_mon, 1, 0, 0, 0, 0, 0, 0)) * 1000
+    return 0
+
+
+def fetch_local(window, page_size, by):
+    start_ms = window_start(window, int(time.time() * 1000))
+    con = sqlite3.connect(f"file:{DB}?mode=ro", uri=True)
+    agg = {}
+    for ts, data in con.execute(
+        "select time_created, data from session_message where type='assistant'"
+    ):
+        if ts < start_ms:
+            continue
+        try:
+            msg = json.loads(data)
+        except ValueError:
+            continue
+        mod = msg.get("model") or {}
+        if mod.get("providerID") != "opencode-go":
+            continue
+        tok = msg.get("tokens") or {}
+        cache = tok.get("cache") or {}
+        row = agg.setdefault(
+            mod.get("id") or "?",
+            dict(requests=0, input=0, output=0, cache_read=0, cache_write=0, cost=0.0),
+        )
+        row["requests"] += 1
+        row["input"] += tok.get("input", 0)
+        row["output"] += tok.get("output", 0) + tok.get("reasoning", 0)
+        row["cache_read"] += cache.get("read", 0)
+        row["cache_write"] += cache.get("write", 0)
+        row["cost"] += msg.get("cost") or 0.0
+
+    items = [
+        {
+            "model": model,
+            "provider": "opencode-go",
+            "totalRequests": str(v["requests"]),
+            "totalInputTokens": str(v["input"]),
+            "totalOutputTokens": str(v["output"]),
+            "totalCacheReadTokens": str(v["cache_read"]),
+            "totalCacheWrite5mTokens": str(v["cache_write"]),
+            "totalCacheWrite1hTokens": "0",
+            "totalCostMicroCents": str(int(round(v["cost"] * 100_000_000))),
+        }
+        for model, v in agg.items()
+    ]
+    key = "totalCostMicroCents" if by == "cost" else "totalRequests"
+    items.sort(key=lambda r: int(r[key]), reverse=True)
+    total = len(items)
+    return {
+        "items": items[:page_size],
+        "pageInfo": {
+            "page": 1,
+            "pageSize": page_size,
+            "total": total,
+            "pageCount": max(1, (total + page_size - 1) // page_size),
+        },
+    }
+
+
+def main():
+    argv = sys.argv[1:]
+    opts = {"--window": "5h", "--top": "5", "--by": "cost"}
+    for i, a in enumerate(argv):
+        if a in opts and i + 1 < len(argv):
+            opts[a] = argv[i + 1]
+
+    window = opts["--window"]
+    top = max(1, int(opts["--top"]))
+    by = opts["--by"]
+
+    payload = (
+        fetch_local(window, top, by)
+        if "--local" in argv
+        else fetch_api(window, top, by)
+    )
+    items = payload.get("items", [])
+    if by == "requests":
+        items.sort(key=lambda r: int(r["totalRequests"]), reverse=True)
+
+    if "--json" in argv:
+        print(json.dumps(payload, indent=4))
+        return 0
+
+    page = payload.get("pageInfo", {})
+    print(f"window: {window}  (showing {len(items)} of {page.get('total', len(items))}"
+          f"{', local DB' if '--local' in argv else ', console API'})")
+    print(f"{'model':<28}{'req':>7}{'input':>12}{'output':>11}{'cache read':>13}{'cost':>10}")
+    for r in items:
+        print(
+            f"{r['model']:<28}{r['totalRequests']:>7}{int(r['totalInputTokens']):>12,}"
+            f"{int(r['totalOutputTokens']):>11,}{int(r['totalCacheReadTokens']):>13,}"
+            f"{int(r['totalCostMicroCents']) / 1e8:>10.4f}"
+        )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
