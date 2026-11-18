@@ -49,6 +49,10 @@ all three meters, and hovering the models icon expands a per-model breakdown
 - Bar colours escalate: neutral → **amber at ≥ 70%** → **red at ≥ 90%**.
 - Grey "unavailable" state when the API is unreachable (never stale numbers).
 - Manual refresh button.
+- **Per-model limits** — each model's monthly cap, dollars used, percent and dollars left, so you can see which model is actually holding you back.
+- **Plan detection** — Go / Go Plus / Go Teams inferred automatically from the meters.
+- **Peak pricing badge** — shows when a model is in a 2× pricing window.
+- **Active keys** — name, permission level and expiry for every active API key.
 - **First-run prompt** asks once for your Go API key and stores it locally (0600).
 
 ## Privacy
@@ -146,8 +150,9 @@ export OC_API_KEY=oc_sk_…
 | Action | Result |
 | --- | --- |
 | Click the icon | open / close the limits popup |
-| Hover the grid icon (top-right) | show per-model details |
-| `5h / 24h / 7d` switch | change the models window |
+| Hover the grid icon | per-model usage, or **Limits** for monthly caps |
+| Hover the key icon | active API keys, permissions, expiry |
+| `5h / 24h / 7d / Limits` | change the models view |
 | Click ↻ | force refresh (skips the 15 s cache) |
 | `Esc` or click outside | close |
 
@@ -162,8 +167,10 @@ Two read-only HTTPS endpoints, polled every 30 s while running (no websocket,
 no cookie):
 
 ```
-GET https://opencode.ai/zen/go/v1/usage          # rolling / weekly / monthly %
-GET https://console.opencode.ai/api/usage/models # per-model tokens & cost
+GET https://opencode.ai/zen/go/v1/usage            # rolling / weekly / monthly %
+GET https://opencode.ai/zen/go/v1/models           # catalog: prices, caps, peak rules
+GET https://console.opencode.ai/api/usage/models   # per-model tokens & cost
+GET https://console.opencode.ai/api/service-accounts  # keys and their status
 ```
 
 `oc-meters` and `oc-models` are small Python helpers (stdlib `urllib` only).
@@ -191,7 +198,8 @@ opencode-linux-extension/
 ├── stylesheet.css      # minimal black theme
 ├── oc-mark.svg         # panel icon (OpenCode mark)
 ├── oc-meters           # limits fetcher
-└── oc-models           # per-model fetcher
+├── oc-models           # per-model fetcher
+└── oc-details          # plan, per-model caps, peak state, active keys
 ```
 
 ---

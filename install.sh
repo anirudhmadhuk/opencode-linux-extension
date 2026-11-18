@@ -34,7 +34,7 @@ info "Installing OpenCode Usage Extension ($UUID) ..."
 
 mkdir -p "$EXT_DIR" "$BIN_DIR"
 cp -f "$SRC/metadata.json" "$SRC/extension.js" "$SRC/stylesheet.css" "$SRC/oc-mark.svg" "$EXT_DIR/"
-install -m 0755 "$SRC/oc-meters" "$SRC/oc-models" "$BIN_DIR/"
+install -m 0755 "$SRC/oc-meters" "$SRC/oc-models" "$SRC/oc-details" "$BIN_DIR/"
 
 # Pre-enable the extension so it is active right after the shell restart.
 # `gnome-extensions enable` cannot see a new extension before it is scanned.

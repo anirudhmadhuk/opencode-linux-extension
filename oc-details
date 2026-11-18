@@ -1,0 +1,201 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+"""Aggregate OpenCode Go details for the GNOME extension.
+
+Outputs one JSON document with:
+  plan      : detected tier (go / go-plus / go-teams)
+  peak      : whether peak pricing is active right now
+  limits    : per-model monthly cap, used, percent, remaining
+  keys      : active API keys with permissions and expiry
+  meters    : raw rolling / weekly / monthly meters
+
+Only stdlib is used. Key comes from $OC_API_KEY or ~/.config/opencode/zen-key.
+"""
+
+import calendar
+import json
+import os
+import sys
+import urllib.request
+from datetime import datetime, timedelta, timezone
+
+CONSOLE = "https://console.opencode.ai"
+CATALOG_URL = "https://opencode.ai/zen/go/v1/models"
+USAGE_URL = "https://opencode.ai/zen/go/v1/usage"
+KEY_PATH = os.path.expanduser("~/.config/opencode/zen-key")
+
+TIERS = ("go", "go-plus", "go-teams")
+
+
+def read_key():
+    key = os.environ.get("OC_API_KEY", "").strip()
+    if key:
+        return key
+    try:
+        with open(KEY_PATH) as handle:
+            return handle.read().strip()
+    except OSError:
+        return None
+
+
+def get_json(url, key):
+    request = urllib.request.Request(
+        url, headers={"Authorization": f"Bearer {key}", "User-Agent": "oc-details/1"})
+    with urllib.request.urlopen(request, timeout=20) as response:
+        return json.load(response)
+
+
+def minus_month(when):
+    year, month = when.year, when.month - 1
+    if month == 0:
+        year, month = year - 1, 12
+    day = min(when.day, calendar.monthrange(year, month)[1])
+    return when.replace(year=year, month=month, day=day)
+
+
+def window_queries(meters, now):
+    """Return (label, query, fraction) for the three plan windows."""
+    result = []
+
+    rolling = now - timedelta(hours=5)
+    result.append(("5h", f"since={rolling.strftime('%Y-%m-%dT%H:%M:%S.000Z')}", 0.20))
+
+    weekly_reset = datetime.fromisoformat(meters["weekly"]["resetsAt"].replace("Z", "+00:00"))
+    week_start = weekly_reset - timedelta(days=7)
+    result.append(("week", f"from={week_start:%Y-%m-%d}&to={now:%Y-%m-%d}", 0.50))
+
+    monthly_reset = datetime.fromisoformat(meters["monthly"]["resetsAt"].replace("Z", "+00:00"))
+    month_start = minus_month(monthly_reset)
+    result.append(("month", f"from={month_start:%Y-%m-%d}&to={now:%Y-%m-%d}", 1.0))
+
+    return result
+
+
+def model_rows(key, query):
+    data = get_json(f"{CONSOLE}/api/usage/models?{query}&pageSize=50&costOrder=desc", key)
+    return data.get("items", [])
+
+
+METER_KEY = {"5h": "rolling", "week": "weekly", "month": "monthly"}
+
+
+def detect_plan(catalog, windows, meters):
+    """Pick the tier whose per-model percentages best match the meters."""
+    scored = []
+    for tier in TIERS:
+        errors = []
+        for label, items, fraction in windows:
+            maximum = 0.0
+            for item in items:
+                limits = catalog.get(item["model"], {}).get("go", {}).get("monthly_usage", {})
+                limit = limits.get(tier)
+                if not limit:
+                    continue
+                cost = int(item["totalCostMicroCents"]) / 1e8
+                maximum = max(maximum, cost / (limit * fraction) * 100)
+            errors.append(abs(maximum - meters[METER_KEY[label]]["percent"]))
+        scored.append((sum(errors) / len(errors), tier))
+
+    scored.sort()
+    best_error, best_tier = scored[0]
+    return best_tier, round(best_error, 2)
+
+
+def peak_state(catalog, now):
+    """Which models are in a peak-pricing window right now."""
+    weekday = now.strftime("%a").lower()[:3]
+    hhmm = now.strftime("%H:%M")
+    active = {}
+    for model_id, model in catalog.items():
+        for rule in model.get("cost", {}).get("multipliers", []):
+            when = rule.get("when", {})
+            days = when.get("utc_days", {}).get("in")
+            if days and weekday not in days:
+                continue
+            matched = False
+            for clause in when.get("any", []):
+                for part in clause.get("all", []):
+                    hours = part.get("utc_hours")
+                    if not hours:
+                        continue
+                    if hours.get("gte", "00:00") <= hhmm < hours.get("lt", "24:00"):
+                        matched = True
+            if matched:
+                active[model_id] = rule.get("factor", 1)
+    if not active:
+        return {"active": False, "factor": 1, "models": []}
+    return {
+        "active": True,
+        "factor": max(active.values()),
+        "models": sorted(active),
+    }
+
+
+def active_keys(key):
+    accounts = get_json(f"{CONSOLE}/api/service-accounts", key)
+    keys = []
+    for entry in accounts.get("items", []):
+        for item in entry.get("keys", []):
+            if item.get("status") != "active":
+                continue
+            keys.append({
+                "name": item.get("name"),
+                "permissions": item.get("permissions"),
+                "scopes": item.get("scopes", []),
+                "expiresAt": item.get("expiresAt"),
+                "lastUsedAt": item.get("lastUsedAt"),
+            })
+    return keys
+
+
+def main():
+    key = read_key()
+    if not key:
+        print("no API key", file=sys.stderr)
+        return 1
+
+    now = datetime.now(timezone.utc)
+
+    try:
+        meters = get_json(USAGE_URL, key)["usage"]
+        catalog = {m["id"]: m for m in get_json(CATALOG_URL, key).get("data", [])}
+        queries = window_queries(meters, now)
+        windows = [(label, model_rows(key, query), fraction)
+                   for label, query, fraction in queries]
+        plan, error = detect_plan(catalog, windows, meters)
+        keys = active_keys(key)
+    except Exception as exc:
+        print(f"{type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+
+    month_items = next(items for label, items, _ in windows if label == "month")
+    limits = []
+    for item in month_items:
+        limits_map = catalog.get(item["model"], {}).get("go", {}).get("monthly_usage", {})
+        cap = limits_map.get(plan)
+        if not cap:
+            continue
+        cost = int(item["totalCostMicroCents"]) / 1e8
+        limits.append({
+            "model": item["model"],
+            "used": round(cost, 4),
+            "cap": cap,
+            "percent": round(cost / cap * 100, 1),
+            "left": round(max(0.0, cap - cost), 4),
+        })
+    limits.sort(key=lambda row: row["percent"], reverse=True)
+
+    print(json.dumps({
+        "plan": plan,
+        "planError": error,
+        "peak": peak_state(catalog, now),
+        "meters": meters,
+        "limits": limits,
+        "keys": keys,
+        "generatedAt": int(now.timestamp() * 1000),
+    }, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

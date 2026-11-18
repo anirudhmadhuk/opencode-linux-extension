@@ -83,7 +83,7 @@ if [ -d "$EXT_DIR" ]; then
     info "Removed $EXT_DIR"
 fi
 
-for helper in oc-meters oc-models; do
+for helper in oc-meters oc-models oc-details; do
     if [ -f "$BIN_DIR/$helper" ]; then
         rm -f "$BIN_DIR/$helper"
         info "Removed $BIN_DIR/$helper"

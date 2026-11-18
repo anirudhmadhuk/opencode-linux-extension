@@ -9,7 +9,7 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 
 const POLL_SECONDS = 30;
-const POPUP_W = 300;
+const POPUP_W = 340;
 const MODELS_W = 320;
 
 const LIMITS = [
@@ -40,6 +40,24 @@ function resetsIn(iso) {
     return `${m}m`;
 }
 
+const FILL_CLASSES = [
+    'oc-fill-idle', 'oc-fill-ok', 'oc-fill-warn', 'oc-fill-danger', 'oc-fill-critical',
+];
+
+function fillClass(percent) {
+    if (percent >= 95) return 'oc-fill-critical';   // maroon
+    if (percent >= 85) return 'oc-fill-danger';     // red
+    if (percent >= 60) return 'oc-fill-warn';       // yellow
+    if (percent >= 35) return 'oc-fill-ok';         // green
+    return 'oc-fill-idle';                          // white
+}
+
+function applyFill(widget, percent) {
+    for (const name of FILL_CLASSES)
+        widget.remove_style_class_name(name);
+    widget.add_style_class_name(fillClass(percent));
+}
+
 export default class OcGoExtension extends Extension {
     enable() {
         this._home = GLib.get_home_dir();
@@ -47,6 +65,8 @@ export default class OcGoExtension extends Extension {
         this._open = false;
         this._modelsOpen = false;
         this._modelsWindow = '5h';
+        this._keysOpen = false;
+        this._details = null;
         this._hideTimer = 0;
         this._stageKeyId = 0;
 
@@ -54,6 +74,7 @@ export default class OcGoExtension extends Extension {
         this._buildDismiss();
         this._buildPopup();
         this._buildModels();
+        this._buildKeys();
 
         this._refresh(true);
         this._poll = GLib.timeout_add_seconds(
@@ -68,6 +89,7 @@ export default class OcGoExtension extends Extension {
         if (this._stageKeyId) { global.stage.disconnect(this._stageKeyId); this._stageKeyId = 0; }
         this._popup?.destroy(); this._popup = null;
         this._models?.destroy(); this._models = null;
+        this._keys?.destroy(); this._keys = null;
         this._dismiss?.destroy(); this._dismiss = null;
         this._button?.destroy(); this._button = null;
     }
@@ -125,10 +147,33 @@ export default class OcGoExtension extends Extension {
 
         const header = new St.BoxLayout({ vertical: false });
         const title = new St.Label({ text: 'OpenCode Go', style_class: 'oc-title', x_expand: true, x_align: Clutter.ActorAlign.START });
+        this._peakBadge = new St.BoxLayout({
+            style_class: 'oc-peak',
+            y_align: Clutter.ActorAlign.CENTER,
+            reactive: false,
+        });
+        const peakDot = new St.Widget({
+            style_class: 'oc-peak-dot',
+            width: 6,
+            height: 6,
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        this._peakLabel = new St.Label({
+            text: 'peak ×2',
+            style_class: 'oc-peak-label',
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        this._peakBadge.add_child(peakDot);
+        this._peakBadge.add_child(this._peakLabel);
+        this._peakBadge.hide();
         this._modelsBtn = this._makeHeaderIcon('view-grid-symbolic', 'Models');
+        this._keysBtn = this._makeHeaderIcon('dialog-password-symbolic', 'Keys');
         this._refreshBtn = this._makeHeaderIcon('view-refresh-symbolic', 'Refresh');
+        title.y_align = Clutter.ActorAlign.CENTER;
         header.add_child(title);
+        header.add_child(this._peakBadge);
         header.add_child(this._modelsBtn);
+        header.add_child(this._keysBtn);
         header.add_child(this._refreshBtn);
         this._popup.add_child(header);
 
@@ -154,6 +199,8 @@ export default class OcGoExtension extends Extension {
 
         this._modelsBtn.connect('enter-event', () => { this._showModels(); return Clutter.EVENT_PROPAGATE; });
         this._modelsBtn.connect('leave-event', () => { this._scheduleHideModels(); return Clutter.EVENT_PROPAGATE; });
+        this._keysBtn.connect('enter-event', () => { this._showKeys(); return Clutter.EVENT_PROPAGATE; });
+        this._keysBtn.connect('leave-event', () => { this._scheduleHideKeys(); return Clutter.EVENT_PROPAGATE; });
         this._refreshBtn.connect('clicked', () => { this._spin(this._refreshBtn); this._refresh(true); });
 
         this._popup.hide();
@@ -215,8 +262,8 @@ export default class OcGoExtension extends Extension {
 
         const seg = new St.BoxLayout({ vertical: false, style_class: 'oc-seg' });
         this._segBtns = {};
-        for (const w of ['5h', '24h', '7d']) {
-            const b = new St.Button({ label: w, can_focus: false, reactive: true, style_class: 'oc-seg-btn' });
+        for (const [w, label] of [['5h', '5h'], ['24h', '24h'], ['7d', '7d'], ['limits', 'Limits']]) {
+            const b = new St.Button({ label, can_focus: false, reactive: true, style_class: 'oc-seg-btn' });
             b.connect('clicked', () => { this._modelsWindow = w; this._styleSeg(); this._refreshModels(); });
             this._segBtns[w] = b;
             seg.add_child(b);
@@ -304,6 +351,7 @@ export default class OcGoExtension extends Extension {
         if (!this._open) return;
         this._open = false;
         this._hideModels();
+        this._hideKeys();
         if (this._stageKeyId) { global.stage.disconnect(this._stageKeyId); this._stageKeyId = 0; }
         this._animateOut(this._popup, () => this._dismiss.hide());
     }
@@ -319,15 +367,43 @@ export default class OcGoExtension extends Extension {
 
     _showModels() {
         if (!this._open || this._modelsOpen) return;
+        if (this._keysOpen) this._hideKeys();
         this._modelsOpen = true;
         this._clearHideTimer();
+        this._placeSidePanel(this._models, MODELS_W);
+        this._animateIn(this._models);
+        this._refreshModels();
+    }
+
+    _showKeys() {
+        if (!this._open || this._keysOpen) return;
+        if (this._modelsOpen) this._hideModels();
+        this._keysOpen = true;
+        this._clearHideTimer();
+        this._placeSidePanel(this._keys, MODELS_W);
+        this._animateIn(this._keys);
+        if (this._details) this._renderKeys(this._details.keys || []);
+        else this._refreshDetails();
+    }
+
+    _scheduleHideKeys() {
+        this._clearHideTimer();
+        this._hideTimer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 220, () => { this._hideKeys(); return GLib.SOURCE_REMOVE; });
+    }
+
+    _hideKeys() {
+        this._clearHideTimer();
+        if (!this._keysOpen) return;
+        this._keysOpen = false;
+        this._animateOut(this._keys);
+    }
+
+    _placeSidePanel(actor, width) {
         const [px, py] = this._popup.get_position();
         const m = Main.layoutManager.primaryMonitor;
         let x = px + POPUP_W + 8;
-        if (x + MODELS_W > m.x + m.width - 8) x = px - MODELS_W - 8;
-        this._models.set_position(Math.max(m.x + 8, x), py);
-        this._animateIn(this._models);
-        this._refreshModels();
+        if (x + width > m.x + m.width - 8) x = px - width - 8;
+        actor.set_position(Math.max(m.x + 8, x), py);
     }
 
     _scheduleHideModels() {
@@ -344,6 +420,126 @@ export default class OcGoExtension extends Extension {
 
     _clearHideTimer() {
         if (this._hideTimer) { GLib.source_remove(this._hideTimer); this._hideTimer = 0; }
+    }
+
+    // ---- keys panel --------------------------------------------------------
+
+    _buildKeys() {
+        this._keys = new St.BoxLayout({
+            vertical: true,
+            width: MODELS_W,
+            style_class: 'oc-popup oc-models',
+            reactive: true,
+        });
+        const header = new St.BoxLayout({ vertical: false });
+        header.add_child(new St.Label({
+            text: 'Active keys',
+            style_class: 'oc-title',
+            x_expand: true,
+            x_align: Clutter.ActorAlign.START,
+        }));
+        this._keys.add_child(header);
+
+        this._keysList = new St.BoxLayout({ vertical: true });
+        this._keys.add_child(this._keysList);
+
+        this._keys.connect('enter-event', () => { this._clearHideTimer(); return Clutter.EVENT_PROPAGATE; });
+        this._keys.connect('leave-event', () => { this._scheduleHideKeys(); return Clutter.EVENT_PROPAGATE; });
+        this._keys.hide();
+        Main.layoutManager.addTopChrome(this._keys);
+    }
+
+    _refreshDetails() {
+        this._spawn([`${this._home}/.local/bin/oc-details`], out => {
+            let details = null;
+            if (out) {
+                try { details = JSON.parse(out); } catch (e) { /* ignore */ }
+            }
+            if (details) this._detailsAt = Date.now();
+            this._renderDetails(details);
+        });
+    }
+
+    _renderDetails(details) {
+        this._details = details;
+        if (!details) {
+            this._peakBadge.hide();
+            this._renderKeys(null);
+            if (this._modelsWindow === 'limits') this._renderModelLimits(null);
+            return;
+        }
+        const peak = details.peak;
+        if (peak && peak.active) {
+            this._peakLabel.text = `peak ×${peak.factor}`;
+            this._peakBadge.show();
+        } else {
+            this._peakBadge.hide();
+        }
+        this._renderKeys(details.keys || []);
+        if (this._modelsWindow === 'limits') this._renderModelLimits(details.limits || []);
+    }
+
+    _renderKeys(keys) {
+        if (!this._keysList) return;
+        this._keysList.destroy_all_children();
+        this._keys.remove_style_class_name('oc-error');
+        if (!keys || !keys.length) {
+            this._keys.add_style_class_name('oc-error');
+            this._keysList.add_child(new St.Label({ text: 'no active keys', style_class: 'oc-empty' }));
+            return;
+        }
+        for (const key of keys) {
+            const name = new St.Label({ text: key.name, style_class: 'oc-model-name' });
+            const perms = key.permissions === 'all'
+                ? 'full access'
+                : (key.scopes || []).join(', ') || 'restricted';
+            const expiry = key.expiresAt ? `expires ${key.expiresAt.slice(0, 10)}` : 'no expiry';
+            const sub = new St.Label({ text: `${perms} · ${expiry}`, style_class: 'oc-sub' });
+
+            const row = new St.BoxLayout({ vertical: true, style_class: 'oc-row oc-model-row' });
+            row.add_child(name);
+            row.add_child(sub);
+            this._keysList.add_child(row);
+        }
+    }
+
+    _renderModelLimits(limits) {
+        this._modelsList.destroy_all_children();
+        this._models.remove_style_class_name('oc-error');
+        if (!limits || !limits.length) {
+            this._models.add_style_class_name('oc-error');
+            this._modelsList.add_child(new St.Label({ text: 'unavailable', style_class: 'oc-empty' }));
+            return;
+        }
+        for (const item of limits) {
+            const top = new St.BoxLayout({ vertical: false });
+            const name = new St.Label({ text: item.model, style_class: 'oc-model-name', x_expand: true, x_align: Clutter.ActorAlign.START });
+            const pct = new St.Label({ text: `${item.percent.toFixed(1)}%`, style_class: 'oc-model-share' });
+            top.add_child(name);
+            top.add_child(pct);
+
+            const fill = new St.Widget({ style_class: 'oc-fill', width: 0, height: 4 });
+            const bar = new St.Widget({ style_class: 'oc-bar oc-thin', width: MODELS_W - 28, height: 4 });
+            bar.add_child(fill);
+
+            const sub = new St.Label({
+                text: `$${item.used.toFixed(2)} of $${item.cap} · $${item.left.toFixed(2)} left`,
+                style_class: 'oc-sub',
+            });
+
+            const row = new St.BoxLayout({ vertical: true, style_class: 'oc-row oc-model-row' });
+            row.add_child(top);
+            row.add_child(bar);
+            row.add_child(sub);
+            this._modelsList.add_child(row);
+
+            applyFill(fill, item.percent);
+            fill.ease({
+                width: Math.round(Math.min(100, item.percent) / 100 * (MODELS_W - 28)),
+                duration: 300,
+                mode: Clutter.AnimationMode.EASE_OUT_QUAD,
+            });
+        }
     }
 
     // ---- animation ---------------------------------------------------------
@@ -398,8 +594,11 @@ export default class OcGoExtension extends Extension {
 
     _refresh(force) {
         this._refreshLimits(force);
-        if (this._modelsOpen) this._refreshModels();
-        else if (this._open) this._refreshModels();
+        if (this._open) {
+            if (!this._detailsAt || Date.now() - this._detailsAt > 60000)
+                this._refreshDetails();
+            this._refreshModels();
+        }
     }
 
     _refreshLimits(force) {
@@ -472,14 +671,13 @@ export default class OcGoExtension extends Extension {
 
             row.pct.text = p === null ? '—' : `${p}%`;
             row.sub.text = `resets in ${resetsIn(v && v.resetsAt)}`;
-            row.fill.remove_style_class_name('oc-fill-warn');
-            row.fill.remove_style_class_name('oc-fill-danger');
+            for (const name of FILL_CLASSES)
+                row.fill.remove_style_class_name(name);
 
             if (p === null) {
                 row.fill.ease({ width: 0, duration: 200, mode: Clutter.AnimationMode.EASE_OUT_QUAD });
             } else {
-                if (p >= 90) row.fill.add_style_class_name('oc-fill-danger');
-                else if (p >= 70) row.fill.add_style_class_name('oc-fill-warn');
+                row.fill.add_style_class_name(fillClass(p));
                 row.fill.ease({
                     width: Math.round(p / 100 * (POPUP_W - 28)),
                     duration: 300, mode: Clutter.AnimationMode.EASE_OUT_QUAD,
@@ -493,6 +691,13 @@ export default class OcGoExtension extends Extension {
     }
 
     _refreshModels() {
+        if (this._modelsWindow === 'limits') {
+            if (this._details)
+                this._renderModelLimits(this._details.limits || []);
+            else
+                this._refreshDetails();
+            return;
+        }
         const args = [`${this._home}/.local/bin/oc-models`, '--window', this._modelsWindow, '--top', '5', '--json'];
         this._spawn(args, out => {
             let items = null;
