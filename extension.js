@@ -147,31 +147,11 @@ export default class OcGoExtension extends Extension {
 
         const header = new St.BoxLayout({ vertical: false });
         const title = new St.Label({ text: 'OpenCode Go', style_class: 'oc-title', x_expand: true, x_align: Clutter.ActorAlign.START });
-        this._peakBadge = new St.BoxLayout({
-            style_class: 'oc-peak',
-            y_align: Clutter.ActorAlign.CENTER,
-            reactive: false,
-        });
-        const peakDot = new St.Widget({
-            style_class: 'oc-peak-dot',
-            width: 6,
-            height: 6,
-            y_align: Clutter.ActorAlign.CENTER,
-        });
-        this._peakLabel = new St.Label({
-            text: 'peak ×2',
-            style_class: 'oc-peak-label',
-            y_align: Clutter.ActorAlign.CENTER,
-        });
-        this._peakBadge.add_child(peakDot);
-        this._peakBadge.add_child(this._peakLabel);
-        this._peakBadge.hide();
         this._modelsBtn = this._makeHeaderIcon('view-grid-symbolic', 'Models');
         this._keysBtn = this._makeHeaderIcon('dialog-password-symbolic', 'Keys');
         this._refreshBtn = this._makeHeaderIcon('view-refresh-symbolic', 'Refresh');
         title.y_align = Clutter.ActorAlign.CENTER;
         header.add_child(title);
-        header.add_child(this._peakBadge);
         header.add_child(this._modelsBtn);
         header.add_child(this._keysBtn);
         header.add_child(this._refreshBtn);
@@ -463,17 +443,9 @@ export default class OcGoExtension extends Extension {
     _renderDetails(details) {
         this._details = details;
         if (!details) {
-            this._peakBadge.hide();
             this._renderKeys(null);
             if (this._modelsWindow === 'limits') this._renderModelLimits(null);
             return;
-        }
-        const peak = details.peak;
-        if (peak && peak.active) {
-            this._peakLabel.text = `peak ×${peak.factor}`;
-            this._peakBadge.show();
-        } else {
-            this._peakBadge.hide();
         }
         this._renderKeys(details.keys || []);
         if (this._modelsWindow === 'limits') this._renderModelLimits(details.limits || []);

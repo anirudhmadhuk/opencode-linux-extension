@@ -51,7 +51,6 @@ all three meters, and hovering the models icon expands a per-model breakdown
 - Manual refresh button.
 - **Per-model limits** — each model's monthly cap, dollars used, percent and dollars left, so you can see which model is actually holding you back.
 - **Plan detection** — Go / Go Plus / Go Teams inferred automatically from the meters.
-- **Peak pricing badge** — shows when a model is in a 2× pricing window.
 - **Active keys** — name, permission level and expiry for every active API key.
 - **First-run prompt** asks once for your Go API key and stores it locally (0600).
 

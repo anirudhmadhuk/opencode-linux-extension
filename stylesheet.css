@@ -182,25 +182,3 @@
 .oc-fill-warn     { background: #f5c211; }   /* yellow >= 60% */
 .oc-fill-danger   { background: #e5484d; }   /* red    >= 85% */
 .oc-fill-critical { background: #8b1f26; }   /* maroon >= 95% */
-
-/* Peak pricing pill */
-.oc-peak {
-    background: rgba(245, 194, 17, 0.10);
-    border: 1px solid rgba(245, 194, 17, 0.25);
-    border-radius: 9px;
-    padding: 1px 8px;
-    margin-right: 6px;
-}
-
-.oc-peak-dot {
-    background: #f5c211;
-    border-radius: 3px;
-    margin-right: 5px;
-}
-
-.oc-peak-label {
-    font-size: 9.5px;
-    font-weight: 700;
-    color: #f5c211;
-    letter-spacing: 0.2px;
-}
